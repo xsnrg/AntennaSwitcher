@@ -1,0 +1,11 @@
+node_modules
+dist
+.output
+.tanstack
+.nitro
+*.log
+.env
+.DS_Store
+screenshots/*.png
+screenshots/*.json
+/tmp

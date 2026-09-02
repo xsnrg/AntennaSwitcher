@@ -138,6 +138,8 @@ AT-14 4  ──► Antenna 4
 
 Bond the AT-14 chassis to station ground. Keep weather caps on unused SO-239s.
 
+Optional DC sense: 100 kΩ from the 7–30 V screw to GPIO34, 10 kΩ + 100 nF from GPIO34 to GND. The page then shows shack supply voltage. Die temp and WiFi RSSI need no extra parts.
+
 Full diagrams: [docs/WIRING.md](docs/WIRING.md).
 
 ### First on-air check
@@ -158,6 +160,7 @@ Full diagrams: [docs/WIRING.md](docs/WIRING.md).
 | 2 | 33 | 2 | Antenna 2 |
 | 3 | 25 | 3 | Antenna 3 |
 | 4 | 26 | 4 | Antenna 4 |
+| DC sense | 34 | — | Optional 100 kΩ / 10 kΩ from 7–30 V |
 
 Active HIGH. Confirm with a continuity check from the GPIO pad to the relay driver before transmitting.
 

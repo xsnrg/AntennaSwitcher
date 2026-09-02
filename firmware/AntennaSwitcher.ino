@@ -9,6 +9,9 @@
     3. Any error, panic, watchdog, or shutdown parks TX on port 1 (dummy load).
 
   Arduino IDE: ESP32 Dev Module, 4 MB flash. Libraries: none beyond the core.
+
+  Optional DC sense: 100 kΩ from the 7–30 V terminal to GPIO34, 10 kΩ + 100 nF
+  from GPIO34 to GND. Without it, DC supply shows "—" (die temp and RSSI still work).
 */
 
 #include <WiFi.h>
@@ -30,6 +33,9 @@ static const bool RELAY_ACTIVE_HIGH = true;
 static const uint8_t FAILSAFE_PORT = 1;
 static const uint32_t BREAK_BEFORE_MAKE_MS = 80;
 static const uint32_t WDT_TIMEOUT_S = 8;
+static const int VIN_ADC_PIN = 34;
+static const float VIN_DIVIDER = 11.0f; /* (100k + 10k) / 10k from 7–30 V terminal */
+static const float VIN_PRESENT_MIN = 4.0f;
 
 WebServer server(80);
 Preferences prefs;
@@ -46,6 +52,34 @@ uint32_t errorCount = 0;
 String lastError = "none";
 uint32_t bootMs = 0;
 uint32_t lastTickMs = 0;
+float vinVoltsCached = NAN;
+float tempCCached = NAN;
+uint32_t lastSenseMs = 0;
+
+float readVinVolts() {
+  uint32_t acc = 0;
+  uint32_t mn = 5000;
+  uint32_t mx = 0;
+  for (int i = 0; i < 16; i++) {
+    uint32_t mv = analogReadMilliVolts(VIN_ADC_PIN);
+    acc += mv;
+    if (mv < mn) mn = mv;
+    if (mv > mx) mx = mv;
+    delayMicroseconds(200);
+  }
+  if (mx > mn && (mx - mn) > 400) return NAN; /* floating GPIO34 */
+  float vin = (acc / 16.0f / 1000.0f) * VIN_DIVIDER;
+  if (vin < VIN_PRESENT_MIN) return NAN;
+  return vin;
+}
+
+void sampleBoard() {
+  uint32_t now = millis();
+  if (now - lastSenseMs < 400 && lastSenseMs != 0) return;
+  lastSenseMs = now;
+  vinVoltsCached = readVinVolts();
+  tempCCached = temperatureRead();
+}
 
 void setRelay(uint8_t index, bool on) {
   uint8_t level = RELAY_ACTIVE_HIGH ? (on ? HIGH : LOW) : (on ? LOW : HIGH);
@@ -133,6 +167,7 @@ String jsonEscape(const String &in) {
 
 String stateJson() {
   accumulateTime();
+  sampleBoard();
   String json = "{";
   json += "\"activePort\":" + String(activePort) + ",";
   json += "\"switching\":";
@@ -143,7 +178,12 @@ String stateJson() {
   json += "\"uptimeMs\":" + String(millis() - bootMs) + ",";
   json += "\"theme\":\"" + jsonEscape(theme) + "\",";
   json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+  json += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  if (isnan(vinVoltsCached)) json += "\"vinVolts\":null,";
+  else json += "\"vinVolts\":" + String(vinVoltsCached, 2) + ",";
+  if (isnan(tempCCached)) json += "\"tempC\":null,";
+  else json += "\"tempC\":" + String(tempCCached, 1) + ",";
   json += "\"ports\":[";
   for (uint8_t i = 0; i < 4; i++) {
     if (i) json += ",";
@@ -203,6 +243,11 @@ button.select[data-on=true]{background:var(--accent);color:var(--accentfg)}
 button.ghost{background:var(--surface2)}
 .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 @media(min-width:640px){.stats{grid-template-columns:repeat(4,1fr)}}
+.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:10px}
+@media(min-width:640px){.metrics{grid-template-columns:repeat(4,1fr)}}
+.metrics b{display:block;font:500 22px/1.2 ui-monospace,monospace}
+.metrics .hint{color:var(--muted);font-size:12px}
+.warn{color:#9b3b3b}
 .chip{display:inline-flex;align-items:center;min-height:36px;padding:0 10px;border-radius:8px;background:var(--surface2)}
 .live{background:var(--accent);color:var(--accentfg)}
 button{cursor:pointer}
@@ -224,6 +269,7 @@ button:active{transform:scale(.96)}
 </header>
 <main>
   <section class="path" id="path"></section>
+  <section class="card" id="board"></section>
   <section class="grid" id="ports"></section>
   <section class="panel">
     <div class="kicker">Console stats</div>
@@ -254,8 +300,23 @@ function render(){
   $('path').innerHTML = '<div class="kicker">RF path · TX to one port only</div>'+
     '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'+
     '<span class="chip">Radio</span><span class="chip">TX</span>'+
-    '<span class="chip live">'+(state.switching?'OPEN':'P'+(active?active.id:'-'))+'</span>'+
-    '<span class="chip">'+(state.switching?'break-before-make':(active?active.name:'open'))+'</span></div>';
+    '<span class="chip live">'+(state.switching?'OPEN':(active?('P'+active.id+' - '+active.name):'OPEN'))+'</span></div>';
+  const vin = state.vinVolts;
+  const vinTxt = (vin==null||!(vin>=0))?'—':vin.toFixed(1)+' V';
+  const vinHint = (vin==null||!(vin>=0))?'Fit 100 kΩ / 10 kΩ on GPIO34':(vin<11?'low':(vin>16?'high':'GPIO34 divider'));
+  const vinWarn = (vin!=null && (vin<11 || vin>16))?' warn':'';
+  const temp = state.tempC;
+  const tempTxt = (temp==null||!(temp===temp))?'—':Math.round(temp)+' °C';
+  const tempF = (temp==null||!(temp===temp))?'—':Math.round(temp*9/5+32)+' °F';
+  const rssi = state.rssi;
+  const rssiTxt = (rssi==null)?'—':rssi+' dBm';
+  const heap = state.heap==null?'—':Math.round(state.heap/1024)+' kB';
+  $('board').innerHTML = '<div class="kicker">Board · '+(state.ip||'ESP32')+'</div>'+
+    '<div class="metrics">'+
+    '<div>DC supply<b class="'+vinWarn+'" id="vin">'+vinTxt+'</b><div class="hint'+vinWarn+'">'+vinHint+'</div></div>'+
+    '<div>Die temp<b>'+tempTxt+'</b><div class="hint">'+tempF+'</div></div>'+
+    '<div>WiFi<b>'+rssiTxt+'</b><div class="hint">RSSI</div></div>'+
+    '<div>Free heap<b>'+heap+'</b><div class="hint">SRAM</div></div></div>';
   $('ports').innerHTML = state.ports.map(p=>{
     const on = !state.switching && p.id===state.activePort;
     return `<article class="card port" data-selected="${on}">
@@ -390,6 +451,10 @@ void setup() {
     pinMode(RELAY_PINS[i], OUTPUT);
     setRelay(i, false);
   }
+  analogReadResolution(12);
+  analogSetPinAttenuation(VIN_ADC_PIN, ADC_11db);
+  pinMode(VIN_ADC_PIN, INPUT);
+  sampleBoard();
   applyPort(FAILSAFE_PORT);
   selectCount[FAILSAFE_PORT - 1] = 1;
   lastSelectedAt[FAILSAFE_PORT - 1] = millis();
@@ -433,6 +498,7 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
   accumulateTime();
+  sampleBoard();
   server.handleClient();
   if (WiFi.status() != WL_CONNECTED) {
     static uint32_t lastAttempt = 0;

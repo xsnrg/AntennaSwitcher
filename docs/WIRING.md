@@ -51,27 +51,12 @@ Screw the shack 13.8 V onto `7–30V` and `GND`. Leave `L/N` empty. Do not feed 
 | 2 | 33 | 2 | 2 | Antenna 2 |
 | 3 | 25 | 3 | 3 | Antenna 3 |
 | 4 | 26 | 4 | 4 | Antenna 4 |
-| DC | 34 | — | — | 100 kΩ/10 kΩ VIN sense |
 
 Firmware: `RELAY_PINS[] = {32, 33, 25, 26}`, active HIGH. Confirm on your PCB before on-air use.
 
-## DC supply sense
+## Rails
 
-The board does not measure 13.8 V by itself. Add:
-
-```text
-7–30 V screw ── 100 kΩ ── GPIO34 ── 10 kΩ ── GND
-                                 └── 100 nF ── GND
-```
-
-| Part | Value |
-| --- | --- |
-| Rtop | 100 kΩ, 1%, ≥0.25 W |
-| Rbot | 10 kΩ, 1% |
-| C | 100 nF across Rbot |
-| Scale | ×11  →  13.8 V → 1.25 V at GPIO34 |
-
-GPIO34 is input-only ADC1. Keep this on the **DC 7–30 V** screw, never on an AC terminal. Without the divider, the UI leaves DC blank; die temp and RSSI still work.
+No extra sense wiring. 5 V and the 7–30 V input are not on an ADC; putting 5 V on a GPIO will destroy the ESP32. The 3.3 V rail is watched only by the brownout detector (last reset reason on the control page).
 
 ## RF notes
 

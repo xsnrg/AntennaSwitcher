@@ -53,28 +53,27 @@ Verify with a continuity check from GPIO pad to the relay driver before first TX
 | 3 | 25 | Control 3 | Antenna 3 |
 | 4 | 26 | Control 4 | Antenna 4 |
 | LED | 23 | — | Status (unused) |
-| VIN sense | 34 | — | Optional 100 kΩ / 10 kΩ from 7–30 V |
 
 Logic is **active HIGH** on this family (GPIO HIGH energizes the 5 V coil). Contrast: the Tech Minds discrete relay brick was active LOW.
 
-Safe GPIOs for this job: 25, 26, 32, 33 (not strapping, not flash, output-capable). GPIO34 is ADC1_CH6 (input-only, WiFi-safe) and is the VIN sense pin.
+Safe GPIOs for this job: 25, 26, 32, 33 (not strapping, not flash, output-capable).
 
 ### On-board sensors
 
-The stock PCB has **no** DC voltage divider and **no** thermistor.
+The stock PCB has **no** voltage divider on VIN, 5 V, or 3.3 V, and **no** thermistor.
 
 | Metric | How | Extra parts |
 | --- | --- | --- |
-| Shack DC (13.8 V) | ADC1 on GPIO34 through 100 kΩ / 10 kΩ | Two 1% resistors + 100 nF |
+| 3.3 V rail | Brownout detector + `esp_reset_reason()` | None. Binary: last reset was brownout or not. Not a voltmeter. |
 | Die temperature | ESP32-WROOM-32E internal sensor (`temperatureRead()`) | None. Uncalibrated, typically 10–20 °C above ambient |
 | WiFi RSSI | `WiFi.RSSI()` | None |
 | Free heap | `ESP.getFreeHeap()` | None |
+| 5 V coil rail | **Not available** | A divider would be required; 5 V on a GPIO destroys the ESP32 |
+| 7–30 V input | **Not available** | Same: no ADC tap after the regulator |
 
-The classic ESP32 can also read its hall sensor; it is not useful here. There is no internal way to measure the 7–30 V rail — the 3.3 V ADC only sees the module rail after the AMS1117, which stays 3.3 V until the input collapses. GPIO34 is the right place for a divider: unused, ADC1 (not stolen by WiFi), input-only.
+Classic ESP32 has no `ESP.getVcc()` (that is ESP8266). The ADC uses a ~1.1 V bandgap and cannot sample VDD internally. Tying 3.3 V straight to GPIO34 is electrically safe but sits outside the linear ADC range (~2.45 V max at 11 dB), so it is not a useful rail meter. This project does not add resistors.
 
-Divider: 100 kΩ from the `7–30V` screw to GPIO34, 10 kΩ and 100 nF from GPIO34 to GND. Scale ×11. At 13.8 V the pin sits at 1.25 V. Firmware treats a floating or < 4 V reading as “not fitted” so the page shows a dash instead of a fake 0.00 V.
-
-The die sensor is for “is this box cooking,” not shack weather. Warn in firmware at 70 °C (chip rated 85 °C).
+The die sensor is for “is this box cooking,” not shack weather. Warn in firmware at 70 °C (chip rated 85 °C). If the 3.3 V rail sags hard, the chip resets and the next boot reports `brownout`.
 
 ### Module (ESP32-WROOM-32E)
 
@@ -177,7 +176,6 @@ Not used. Leave it in the bag. The ESP32 board replaces it.
 | 3.3 V USB-serial adapter | First flash |
 | Enclosure for the ESP32 board | Strain relief, no stray 12 V shorts |
 | Optional: Polyfuse on +12 V into the daisy-chain | Coil/wiring faults |
-| Optional: 100 kΩ + 10 kΩ + 100 nF | GPIO34 DC voltage sense from the 7–30 V terminal |
 
 ---
 

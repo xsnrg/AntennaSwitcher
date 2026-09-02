@@ -10,8 +10,8 @@
 
   Arduino IDE: ESP32 Dev Module, 4 MB flash. Libraries: none beyond the core.
 
-  Optional DC sense: 100 kΩ from the 7–30 V terminal to GPIO34, 10 kΩ + 100 nF
-  from GPIO34 to GND. Without it, DC supply shows "—" (die temp and RSSI still work).
+  Rails: 5 V and VIN are not on an ADC. 3.3 V is watched by the brownout
+  detector (last reset reason). Die temp and WiFi RSSI need no extra parts.
 */
 
 #include <WiFi.h>
@@ -33,9 +33,6 @@ static const bool RELAY_ACTIVE_HIGH = true;
 static const uint8_t FAILSAFE_PORT = 1;
 static const uint32_t BREAK_BEFORE_MAKE_MS = 80;
 static const uint32_t WDT_TIMEOUT_S = 8;
-static const int VIN_ADC_PIN = 34;
-static const float VIN_DIVIDER = 11.0f; /* (100k + 10k) / 10k from 7–30 V terminal */
-static const float VIN_PRESENT_MIN = 4.0f;
 
 WebServer server(80);
 Preferences prefs;
@@ -52,32 +49,32 @@ uint32_t errorCount = 0;
 String lastError = "none";
 uint32_t bootMs = 0;
 uint32_t lastTickMs = 0;
-float vinVoltsCached = NAN;
 float tempCCached = NAN;
 uint32_t lastSenseMs = 0;
+bool railOkCached = true;
+const char *resetReasonCached = "power-on";
 
-float readVinVolts() {
-  uint32_t acc = 0;
-  uint32_t mn = 5000;
-  uint32_t mx = 0;
-  for (int i = 0; i < 16; i++) {
-    uint32_t mv = analogReadMilliVolts(VIN_ADC_PIN);
-    acc += mv;
-    if (mv < mn) mn = mv;
-    if (mv > mx) mx = mv;
-    delayMicroseconds(200);
+const char *resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_UNKNOWN: return "unknown";
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "int watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    default: return "other";
   }
-  if (mx > mn && (mx - mn) > 400) return NAN; /* floating GPIO34 */
-  float vin = (acc / 16.0f / 1000.0f) * VIN_DIVIDER;
-  if (vin < VIN_PRESENT_MIN) return NAN;
-  return vin;
 }
 
 void sampleBoard() {
   uint32_t now = millis();
   if (now - lastSenseMs < 400 && lastSenseMs != 0) return;
   lastSenseMs = now;
-  vinVoltsCached = readVinVolts();
   tempCCached = temperatureRead();
 }
 
@@ -180,8 +177,9 @@ String stateJson() {
   json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
   json += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
-  if (isnan(vinVoltsCached)) json += "\"vinVolts\":null,";
-  else json += "\"vinVolts\":" + String(vinVoltsCached, 2) + ",";
+  json += "\"railOk\":";
+  json += railOkCached ? "true," : "false,";
+  json += "\"resetReason\":\"" + String(resetReasonCached) + "\",";
   if (isnan(tempCCached)) json += "\"tempC\":null,";
   else json += "\"tempC\":" + String(tempCCached, 1) + ",";
   json += "\"ports\":[";
@@ -301,10 +299,9 @@ function render(){
     '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'+
     '<span class="chip">Radio</span><span class="chip">TX</span>'+
     '<span class="chip live">'+(state.switching?'OPEN':(active?('P'+active.id+' - '+active.name):'OPEN'))+'</span></div>';
-  const vin = state.vinVolts;
-  const vinTxt = (vin==null||!(vin>=0))?'—':vin.toFixed(1)+' V';
-  const vinHint = (vin==null||!(vin>=0))?'Fit 100 kΩ / 10 kΩ on GPIO34':(vin<11?'low':(vin>16?'high':'GPIO34 divider'));
-  const vinWarn = (vin!=null && (vin<11 || vin>16))?' warn':'';
+  const browned = state.railOk===false;
+  const railTxt = browned?'Brownout':'OK';
+  const reset = state.resetReason||'unknown';
   const temp = state.tempC;
   const tempTxt = (temp==null||!(temp===temp))?'—':Math.round(temp)+' °C';
   const tempF = (temp==null||!(temp===temp))?'—':Math.round(temp*9/5+32)+' °F';
@@ -313,10 +310,11 @@ function render(){
   const heap = state.heap==null?'—':Math.round(state.heap/1024)+' kB';
   $('board').innerHTML = '<div class="kicker">Board · '+(state.ip||'ESP32')+'</div>'+
     '<div class="metrics">'+
-    '<div>DC supply<b class="'+vinWarn+'" id="vin">'+vinTxt+'</b><div class="hint'+vinWarn+'">'+vinHint+'</div></div>'+
+    '<div>3.3 V rail<b class="'+(browned?' warn':'')+'">'+railTxt+'</b><div class="hint'+(browned?' warn':'')+'">last reset: '+reset+'</div></div>'+
     '<div>Die temp<b>'+tempTxt+'</b><div class="hint">'+tempF+'</div></div>'+
     '<div>WiFi<b>'+rssiTxt+'</b><div class="hint">RSSI</div></div>'+
-    '<div>Free heap<b>'+heap+'</b><div class="hint">SRAM</div></div></div>';
+    '<div>Free heap<b>'+heap+'</b><div class="hint">SRAM</div></div></div>'+
+    '<p style="color:var(--muted);font-size:12px;margin:12px 0 0">5 V coil rail is not brought to an ADC on this board. 3.3 V is watched by the brownout detector, not a voltmeter.</p>';
   $('ports').innerHTML = state.ports.map(p=>{
     const on = !state.switching && p.id===state.activePort;
     return `<article class="card port" data-selected="${on}">
@@ -451,9 +449,8 @@ void setup() {
     pinMode(RELAY_PINS[i], OUTPUT);
     setRelay(i, false);
   }
-  analogReadResolution(12);
-  analogSetPinAttenuation(VIN_ADC_PIN, ADC_11db);
-  pinMode(VIN_ADC_PIN, INPUT);
+  resetReasonCached = resetReasonText();
+  railOkCached = (esp_reset_reason() != ESP_RST_BROWNOUT);
   sampleBoard();
   applyPort(FAILSAFE_PORT);
   selectCount[FAILSAFE_PORT - 1] = 1;

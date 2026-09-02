@@ -19,6 +19,22 @@ WiFi control for a 4-port HF antenna switch. One ESP32 sketch, one TX path, fail
 - [docs/WIRING.md](docs/WIRING.md) — RF + 12 V control, NC daisy-chain mutex
 - [firmware/AntennaSwitcher.ino](firmware/AntennaSwitcher.ino) — single-file web UI + relay control
 
+## Lab console
+
+This repo also has a browser lab of the same fail-safe switch: port names, one-tap select, board sensors, wiring and hardware notes. It does **not** move RF.
+
+```bash
+npm install
+npm run dev
+```
+
+Then open the printed local URL. Tests:
+
+```bash
+npm test
+npm run test:e2e
+```
+
 ---
 
 ## What you need

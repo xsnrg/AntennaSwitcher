@@ -3,9 +3,13 @@ dist
 .output
 .tanstack
 .nitro
+.vercel
+.grok
 *.log
 .env
 .DS_Store
-screenshots/*.png
-screenshots/*.json
+screenshots
+artifacts
+.project_id
+.node_modules.lock
 /tmp

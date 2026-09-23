@@ -1,26 +1,35 @@
 # AGENTS.md
 
 ESP32 firmware for a 4-port HF antenna switch (AC/DC relay board B0DCZ549VQ +
-AT-14 1×4 coax switch). Everything is one Arduino sketch; docs are research,
-not build inputs.
+AT-14 1×4 coax switch), plus a browser "lab console" that simulates the same
+switching rules. The firmware is one Arduino sketch; docs are research, not
+build inputs.
 
 ## Layout
 
-- `firmware/AntennaSwitcher.ino` — the entire product: relay control, HTTP
+- `firmware/AntennaSwitcher.ino` — the actual product: relay control, HTTP
   server, and the full web UI (embedded `INDEX_HTML` PROGMEM string). No
-  separate frontend, no libraries beyond the ESP32 core (`WiFi`, `WebServer`,
-  `Preferences`, `ESPmDNS`).
+  libraries beyond the ESP32 core (`WiFi`, `WebServer`, `Preferences`,
+  `ESPmDNS`).
+- `src/`, `package.json`, `vite.config.ts`, `tests/e2e/` — the lab console
+  (Vite + TypeScript + auth/pglite). Simulation only: it does **not** touch
+  RF. `src/lib/switch-engine.ts` mirrors the firmware rules (port 1 failsafe,
+  break-before-make, GPIO map, themes) — keep it consistent with the `.ino`.
 - `README.md`, `docs/HARDWARE.md`, `docs/WIRING.md` — hardware truth. Keep any
-  GPIO/relay-logic change consistent across all four files (`.ino`, README,
-  both docs).
-- `.gitignore` node/web entries are template leftovers. There is no JS.
+  GPIO/relay-logic change consistent across all files that encode it
+  (`.ino`, `switch-engine.ts`, README, both docs).
 
-## No CLI toolchain
+## Toolchains (split reality)
 
-There is no build, test, lint, or CI. `arduino-cli` is not installed. Changes
-are verified by reading and by flashing through **Arduino IDE 2** (board:
-*ESP32 Dev Module*, Flash Size 4 MB, upload 115200) — see README §Flash.
-Do not add package manifests or test frameworks unless asked.
+- **Firmware: no CLI toolchain.** `arduino-cli` is not installed; no build or
+  lint for the `.ino`. Verify by reading + flashing through **Arduino IDE 2**
+  (board: *ESP32 Dev Module*, Flash Size 4 MB, upload 115200) — see README
+  §Flash. The host test harness (`test/harness/`, run via `make -C
+  test/harness` then `python3 test/api_test.py`) compiles the real sketch
+  against stubs and is the only automated firmware check.
+- **Lab console: standard npm.** `npm test` (node --test),
+  `npm run typecheck`, `npm run lint`, `npm run test:e2e`,
+  `npm run dev` (port 8080).
 
 ## Safety invariants (do not break)
 
@@ -59,4 +68,5 @@ real 500 W PEP RF hardware — keep these four invariants explicit in review.
 
 ## Git
 
-Push to `master` (repo default). Ignore stale remote branch `main`.
+Push to `master` (repo default). Stale `origin/main` (pre-restart duplicate)
+was deleted; do not recreate it.

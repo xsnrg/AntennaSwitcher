@@ -113,6 +113,13 @@ void failsafe(const char *reason) {
   selectCount[FAILSAFE_PORT - 1]++;
 }
 
+// Log an API-level error WITHOUT touching the relays. The RF path must
+// keep running on whatever port it is on; only RF faults go to failsafe().
+void noteError(const char *reason) {
+  errorCount++;
+  lastError = reason;
+}
+
 void IRAM_ATTR shutdownHook() {
   for (uint8_t i = 0; i < 4; i++) {
     uint8_t on = (i == 0);
@@ -278,6 +285,7 @@ button:active{transform:scale(.96)}
 <script>
 const $ = (id) => document.getElementById(id);
 let state = null;
+const esc = s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function fmt(ms){
   const s = Math.floor(ms/1000);
   const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
@@ -298,7 +306,7 @@ function render(){
   $('path').innerHTML = '<div class="kicker">RF path · TX to one port only</div>'+
     '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'+
     '<span class="chip">Radio</span><span class="chip">TX</span>'+
-    '<span class="chip live">'+(state.switching?'OPEN':(active?('P'+active.id+' - '+active.name):'OPEN'))+'</span></div>';
+    '<span class="chip live">'+(state.switching?'OPEN':(active?('P'+active.id+' - '+esc(active.name)):'OPEN'))+'</span></div>';
   const browned = state.railOk===false;
   const railTxt = browned?'Brownout':'OK';
   const reset = state.resetReason||'unknown';
@@ -315,13 +323,16 @@ function render(){
     '<div>WiFi<b>'+rssiTxt+'</b><div class="hint">RSSI</div></div>'+
     '<div>Free heap<b>'+heap+'</b><div class="hint">SRAM</div></div></div>'+
     '<p style="color:var(--muted);font-size:12px;margin:12px 0 0">5 V coil rail is not brought to an ADC on this board. 3.3 V is watched by the brownout detector, not a voltmeter.</p>';
+  // Don't clobber a rename input the user is currently typing in.
+  const ae = document.activeElement;
+  if(!(ae && ae.closest && ae.closest('#ports')))
   $('ports').innerHTML = state.ports.map(p=>{
     const on = !state.switching && p.id===state.activePort;
     return `<article class="card port" data-selected="${on}">
       <div class="kicker">Port ${p.id}${p.isDummyLoad?' · Dummy':''}</div>
-      <h2>${p.name}</h2>
+      <h2>${esc(p.name)}</h2>
       <form data-rename="${p.id}">
-        <input type="text" maxlength="32" value="${p.name.replace(/"/g,'')}" aria-label="Name for port ${p.id}"/>
+        <input type="text" maxlength="32" value="${esc(p.name)}" aria-label="Name for port ${p.id}"/>
       </form>
       <div class="meta">
         <div>GPIO<b>${p.gpio}</b></div>
@@ -335,7 +346,7 @@ function render(){
     `<div>Uptime<b style="display:block;font:500 14px/1.4 ui-monospace,monospace">${fmt(state.uptimeMs)}</b></div>
      <div>Operations<b style="display:block;font:500 14px/1.4 ui-monospace,monospace">${state.operationCount}</b></div>
      <div>Errors<b style="display:block;font:500 14px/1.4 ui-monospace,monospace">${state.errorCount}</b></div>
-     <div>Last error<b style="display:block;font:500 14px/1.4 ui-monospace,monospace">${state.lastError}</b></div>`;
+     <div>Last error<b style="display:block;font:500 14px/1.4 ui-monospace,monospace">${esc(state.lastError)}</b></div>`;
 }
 async function refresh(){
   try{
@@ -377,14 +388,36 @@ int parseJsonInt(const String &body, const char *key, int fallback) {
   return body.substring(i + needle.length()).toInt();
 }
 
+// Minimal JSON string extractor: tolerates whitespace after ':' and
+// decodes the standard \" \\ \/ escapes (browser JSON.stringify emits
+// those whenever a name contains a quote or backslash).
 String parseJsonString(const String &body, const char *key) {
-  String needle = String("\"") + key + "\":\"";
+  String needle = String("\"") + key + "\":";
   int i = body.indexOf(needle);
   if (i < 0) return "";
-  int start = i + needle.length();
-  int end = body.indexOf("\"", start);
-  if (end < 0) return "";
-  return body.substring(start, end);
+  int p = i + needle.length();
+  int n = body.length();
+  while (p < n && (body[p] == ' ' || body[p] == '\t' ||
+                   body[p] == '\n' || body[p] == '\r')) p++;
+  if (p >= n || body[p] != '"') return "";
+  p++;
+  String out;
+  for (; p < n; p++) {
+    char c = body[p];
+    if (c == '\\' && p + 1 < n) {
+      char e = body[p + 1];
+      if (e == '"' || e == '\\' || e == '/') { out += e; p++; }
+      else if (e == 'n') { out += '\n'; p++; }
+      else if (e == 't') { out += '\t'; p++; }
+      else if (e == 'r') { out += '\r'; p++; }
+      else out += c;
+    } else if (c == '"') {
+      break;
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 void handleRoot() {
@@ -403,17 +436,34 @@ void handleSelect() {
   server.send(ok ? 200 : 400, "application/json", stateJson());
 }
 
+// If a byte cap cut a multibyte UTF-8 char in half, drop the partial
+// tail — an invalid byte in stateJson() breaks r.json() in the browser.
+static void trimPartialUtf8(String &s) {
+  size_t n = s.length();
+  if (!n) return;
+  size_t i = n;
+  while (i > 0 && i > n - 4 && (uint8_t)s[i - 1] >= 0x80 &&
+         (uint8_t)s[i - 1] < 0xC0) i--;
+  if (i == 0) return;
+  uint8_t lead = (uint8_t)s[i - 1];
+  int need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+  if (lead >= 0xC0 && n - i + 1 < (size_t)need) s.remove(i - 1);
+}
+
 void handleRename() {
   sendCors();
   int port = parseJsonInt(server.arg("plain"), "port", -1);
   String name = parseJsonString(server.arg("plain"), "name");
   name.trim();
   if (port < 1 || port > 4 || name.length() == 0) {
-    failsafe("rename rejected");
+    noteError("rename rejected");
     server.send(400, "application/json", stateJson());
     return;
   }
-  if (name.length() > 32) name = name.substring(0, 32);
+  if (name.length() > 32) {
+    name = name.substring(0, 32);
+    trimPartialUtf8(name);
+  }
   portNames[port - 1] = name;
   prefs.putString(("n" + String(port)).c_str(), name);
   server.send(200, "application/json", stateJson());
@@ -425,8 +475,11 @@ void handleTheme() {
   if (t == "system" || t == "light" || t == "dark" || t == "grey") {
     theme = t;
     prefs.putString("theme", t);
+    server.send(200, "application/json", stateJson());
+  } else {
+    noteError("bad theme");
+    server.send(400, "application/json", stateJson());
   }
-  server.send(200, "application/json", stateJson());
 }
 
 void handleFault() {
@@ -489,6 +542,7 @@ void setup() {
   server.on("/api/select", HTTP_OPTIONS, handleOptions);
   server.on("/api/rename", HTTP_OPTIONS, handleOptions);
   server.on("/api/theme", HTTP_OPTIONS, handleOptions);
+  server.on("/api/fault", HTTP_OPTIONS, handleOptions);
   server.begin();
 }
 

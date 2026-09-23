@@ -13,3 +13,9 @@ artifacts
 .project_id
 .node_modules.lock
 /tmp
+
+# test harness build artifact
+test/harness/harness
+
+# agent session artifacts
+.opencode/

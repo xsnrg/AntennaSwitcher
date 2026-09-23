@@ -10,7 +10,9 @@ WiFi control for a 4-port HF antenna switch. One ESP32 sketch, one TX path, fail
 **Invariants**
 
 1. The TX port is connected to one and only one antenna port at rest.
-2. Every error path, watchdog, and shutdown parks the switch on **port 1**.
+2. Every RF fault, watchdog, and shutdown parks the switch on **port 1**. A
+   rejected API call (bad port, empty name, invalid theme) is not an RF fault:
+   it is reported and the antennas stay put.
 3. Port 1 is a 50 Ω dummy load.
 
 ## Docs
